@@ -1,0 +1,188 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Laurent Grawet <dev@grawet.be>                             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# DELETE <host:remote_system_ds/disk.i|host:remote_system_ds/> vmid dsid
+#   - host is the target host to deploy the VM
+#   - remote_system_ds is the path for the system datastore in the host
+#   - vmid is the id of the VM
+#   - dsid is the target datastore (0 is the system datastore)
+
+DST=$1
+
+VMID=$2
+DSID=$3
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+DRIVER_PATH=$(dirname $0)
+
+source ${DRIVER_PATH}/../../datastore/v7000/v7000.conf
+. ${DRIVER_PATH}/../../datastore/v7000/scripts_v7000.sh
+
+#-------------------------------------------------------------------------------
+# Set src, dst path and dir
+#-------------------------------------------------------------------------------
+
+DST_PATH=`arg_path $DST`
+DST_HOST=`arg_host $DST`
+
+#-------------------------------------------------------------------------------
+# Get DS information
+#-------------------------------------------------------------------------------
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/MGMT \
+                    /DATASTORE/TEMPLATE/MGMT_AUX \
+                    /DATASTORE/TEMPLATE/REPLICATION) 
+
+MGMT=${XPATH_ELEMENTS[0]:-$MGMT}
+MGMT_AUX=${XPATH_ELEMENTS[1]:-$MGMT_AUX}
+REPLICATION=${XPATH_ELEMENTS[2]:-$REPLICATION}
+FAILOVER=${XPATH_ELEMENTS[3]:-$FAILOVER}
+
+#-------------------------------------------------------------------------------
+# Get image information
+#-------------------------------------------------------------------------------
+
+DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
+
+IQN="${XPATH_ELEMENTS[0]}"
+PERSISTENT="${XPATH_ELEMENTS[1]}"
+
+#-------------------------------------------------------------------------------
+# Remove directory if dst_path is a directory
+#-------------------------------------------------------------------------------
+
+if [ `is_disk $DST_PATH` -eq 0 ]; then
+    # Directory
+    log "Deleting $DST_PATH"
+    ssh_exec_and_log "$DST_HOST" "rm -rf $DST_PATH" "Error deleting $DST_PATH"
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Flush iSCSI device on hypervisor
+#-------------------------------------------------------------------------------
+
+MAP_NAME=$(v7000_ssh_monitor_and_log $DST_HOST "readlink $DST_PATH" | grep -o '3.*$')
+VDISK_UID=${MAP_NAME#3}
+
+if [ $REPLICATION -eq 1 ]; then
+    VDISK_NAME=$(v7000_get_vdisk_name ${VDISK_UID} ${MGMT} ${MGMT_AUX})
+    EXIT_STATUS=$?
+    if [ $EXIT_STATUS -eq 2 ]; then
+        MGMT=$MGMT_AUX
+    fi
+else
+    VDISK_NAME=$(v7000_get_vdisk_name ${VDISK_UID} ${MGMT})
+fi
+
+FLUSH_CMD=$(cat <<EOF
+        set -e
+        DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings /dev/mapper/${MAP_NAME} | $AWK -F: '{print \$3}')
+        DM_SLAVE=\$(ls /sys/block/\${DM_HOLDER}/slaves)
+
+        $SUDO $(multipath_flush "$MAP_NAME")
+
+        unset device 
+        for device in \${DM_SLAVE}
+        do 
+            $SUDO $BLOCKDEV --flushbufs /dev/\${device}
+            echo 1 | $SUDO $TEE /sys/block/\${device}/device/delete
+        done
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$FLUSH_CMD" \
+    "Error flushing out mapping"
+
+#-------------------------------------------------------------------------------
+# Unmap iSCSI volume on SAN
+#-------------------------------------------------------------------------------
+
+log "Unmapping $DST_HOST:$VDISK_NAME"
+v7000_unmap "$MGMT" "$DST_HOST" "$VDISK_NAME"
+ssh_exec_and_log "$DST_HOST" "$SUDO $(iscsiadm_session_rescan)" \
+    "Error rescanning iscsi sessions on $DST_HOST"
+
+if [ "$PERSISTENT" = "YES" ]; then
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Remove volume if dst_path is not persistent (check again with volume name)
+#-------------------------------------------------------------------------------
+
+VDISK_TYPE=$(echo $VDISK_NAME | awk -F\- '{printf "%s", $3}; $3=="aux" {printf "-%s", $4}')
+
+if [ "$VDISK_TYPE" = "snapshot" ] || [ "$VDISK_TYPE" = "aux-snapshot" ]; then
+    READY=0
+    TIMEOUT=0
+    while [ "$READY" -ne 1 ]; do
+        READY=1
+        let TIMEOUT++
+        FCMAP=(`v7000_lsvdiskdependentmaps "$VDISK_NAME" "$MGMT"`)
+        if [ ${#FCMAP[@]} -gt 0 ]; then
+            for i in ${FCMAP[@]}; do
+                STATUS=`echo $i | awk -F\: '{print $9}'`
+                if [ "$STATUS" != "idle_or_copied" ]; then
+                    READY=0
+                fi
+            done
+        fi
+        if [ "$TIMEOUT" -le 720 ]; then
+            if [ "$READY" -ne 1 ]; then
+                sleep 60
+            fi
+        else
+            log_error "Error: Timeout waiting for dependent FlashCopy mapping(s) on $MGMT:$VDISK_NAME to complete."
+            error_message "Error: Timeout waiting for dependent FlashCopy mapping(s) on $MGMT:$VDISK_NAME to complete."
+            exit 1
+        fi
+    done
+
+    log "Removing snapshot $MGMT:$VDISK_NAME"
+    v7000_ssh_exec_and_log "$MGMT" "set -e ; svctask stopfcmap ${VDISK_NAME}" \
+        "Error stopping $MGMT:$VDISK_NAME FlashCopy mapping"
+    v7000_ssh_exec_and_log "$MGMT" "set -e ; svctask rmvdisk -force ${VDISK_NAME}" \
+        "Error removing $MGMT:$VDISK_NAME"
+fi
+
+exit 0

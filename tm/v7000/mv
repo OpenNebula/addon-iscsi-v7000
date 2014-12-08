@@ -1,0 +1,208 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Laurent Grawet <dev@grawet.be>                             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# MV <hostA:system_ds/disk.i|hostB:system_ds/disk.i> vmid dsid
+#    <hostA:system_ds/|hostB:system_ds/>
+#   - hostX is the target host to deploy the VM
+#   - system_ds is the path for the system datastore in the host
+#   - vmid is the id of the VM
+#   - dsid is the target datastore (0 is the system datastore)
+
+SRC=$1
+DST=$2
+
+VMID=$3
+DSID=$4
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+DRIVER_PATH=$(dirname $0)
+
+source ${DRIVER_PATH}/../../datastore/v7000/v7000.conf
+. ${DRIVER_PATH}/../../datastore/v7000/scripts_v7000.sh
+
+#-------------------------------------------------------------------------------
+# Return if moving a disk, we will move them when moving the whole system_ds
+# directory for the VM
+#-------------------------------------------------------------------------------
+
+SRC_PATH=`arg_path $SRC`
+DST_PATH=`arg_path $DST`
+
+SRC_HOST=`arg_host $SRC`
+DST_HOST=`arg_host $DST`
+
+DST_DIR=`dirname $DST_PATH`
+
+if [ `is_disk $SRC_PATH` -eq 0 ]; then
+    ssh_make_path $DST_HOST $DST_DIR
+
+    log "Moving $SRC to $DST"
+
+    exec_and_log "$SCP -r $SRC $DST" "Could not copy $SRC to $DST"
+
+    ssh_exec_and_log "$SRC_HOST" "rm -rf $SRC_PATH" \
+        "Could not remove $SRC_HOST:$SRC_PATH"
+
+	exit 0
+fi
+
+if [ "$SRC" == "$DST" ]; then
+    log "Not moving $SRC to $DST, they are the same path"
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Get DS information
+#-------------------------------------------------------------------------------
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/MGMT \
+                    /DATASTORE/TEMPLATE/MGMT_AUX \
+                    /DATASTORE/TEMPLATE/REPLICATION) 
+
+MGMT=${XPATH_ELEMENTS[0]:-$MGMT}
+MGMT_AUX=${XPATH_ELEMENTS[1]:-$MGMT_AUX}
+REPLICATION=${XPATH_ELEMENTS[2]:-$REPLICATION}
+FAILOVER=${XPATH_ELEMENTS[3]:-$FAILOVER}
+
+#-------------------------------------------------------------------------------
+# Get image information
+#-------------------------------------------------------------------------------
+
+DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+DISK_ID=$(echo "$SRC_PATH" | $AWK -F. '{print $NF}')
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
+
+IQN="${XPATH_ELEMENTS[0]}"
+PERSISTENT="${XPATH_ELEMENTS[1]}"
+
+if [ -z "$PERSISTENT" ]; then
+    IQN=$IQN-snapshot-$VMID
+fi
+
+VDISK_NAME=`echo $IQN|$AWK -F. '{print $(NF)}'`
+
+#-------------------------------------------------------------------------------
+# Start actions
+#-------------------------------------------------------------------------------
+
+if is_iscsi "$SRC_HOST"; then
+    FLUSH_CMD=$(cat <<EOF
+        set -e
+        MAP_NAME=\$($READLINK $SRC_PATH | grep -o '3.*$')
+        DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings /dev/mapper/\${MAP_NAME} | $AWK -F: '{print \$3}')
+        DM_SLAVE=\$(ls /sys/block/\${DM_HOLDER}/slaves)
+
+        $SUDO $(multipath_flush "\$MAP_NAME")
+
+        unset device 
+        for device in \${DM_SLAVE}
+        do 
+            $SUDO $BLOCKDEV --flushbufs /dev/\${device}
+            echo 1 | $SUDO $TEE /sys/block/\${device}/device/delete
+        done
+EOF
+)
+
+    log "Unmapping $SRC_HOST:$VDISK_NAME"
+
+    ssh_exec_and_log "$SRC_HOST" "$FLUSH_CMD" \
+        "Error flushing out mapping"
+
+    v7000_unmap "$MGMT" "$SRC_HOST" "$VDISK_NAME"
+    ssh_exec_and_log "$SRC_HOST" "$SUDO $(iscsiadm_session_rescan)" \
+        "Error rescanning iscsi sessions on $SRC_HOST"
+fi
+
+if is_iscsi "$DST_HOST"; then
+    log "Mapping $DST_HOST:$VDISK_NAME"
+
+    if [ $REPLICATION -eq 1 ]; then
+        VDISK_UID=`v7000_get_vdisk_uid ${VDISK_NAME} ${MGMT} ${MGMT_AUX}`
+        EXIT_STATUS=$?
+        if [ $EXIT_STATUS -eq 2 ]; then
+            MGMT=$MGMT_AUX
+        fi
+    else
+        VDISK_UID=`v7000_get_vdisk_uid ${VDISK_NAME} ${MGMT}`
+    fi
+
+    DEV="/dev/mapper/3${VDISK_UID}"
+    v7000_map "$MGMT" "$DST_HOST" "$VDISK_NAME"
+
+    DISCOVER_CMD=$(cat <<EOF
+        set -e
+        mkdir -p "$DST_DIR"
+        $SUDO $(iscsiadm_session_rescan)
+        $SUDO $(multipath_rescan)
+        # Wait a bit for new mapping
+        COUNTER=1
+        while [ ! -e "$DEV" ] && [ \$COUNTER -le 10 ]; do
+            sleep 1
+            COUNTER=\$((\$COUNTER + 1))
+        done
+        if [ ! -e "$DEV" ]; then
+            # Last chance to get our mapping
+            $SUDO $(multipath_rescan)
+            COUNTER=1
+            while [ ! -e "$DEV" ] && [ \$COUNTER -le 10 ]; do
+                sleep 1
+                COUNTER=\$((\$COUNTER + 1))
+            done
+        fi
+        # Exit with error if mapping does not exist
+        if [ ! -e "$DEV" ]; then
+            exit 1
+        fi
+        DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings "$DEV" | $AWK -F: '{print \$3}')
+        # Exit with error if mapping has no path
+        if [ ! "\$(ls -A /sys/block/\${DM_HOLDER}/slaves)" ]; then
+            exit 1
+        fi
+        ln -sf "$DEV" "$DST_PATH"
+EOF
+)
+
+    ssh_exec_and_log "$DST_HOST" "$DISCOVER_CMD" \
+        "Error registering $DST_HOST:$DEV"
+fi
+
+exit 0

@@ -1,0 +1,208 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Laurent Grawet <dev@grawet.be>                             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# mvds host:remote_system_ds/disk.i fe:SOURCE
+#   - fe is the front-end hostname
+#   - SOURCE is the path of the disk image in the form DS_BASE_PATH/disk
+#   - host is the target host to deploy the VM
+#   - remote_system_ds is the path for the system datastore in the host
+#   - vmid is the id of the VM
+#   - dsid is the target datastore (0 is the system datastore)
+
+SRC=$1
+DST=$2
+
+VMID=$3
+DSID=$4
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+DRIVER_PATH=$(dirname $0)
+
+source ${DRIVER_PATH}/../../datastore/v7000/v7000.conf
+. ${DRIVER_PATH}/../../datastore/v7000/scripts_v7000.sh
+
+#-------------------------------------------------------------------------------
+# Set dst path and dir
+#-------------------------------------------------------------------------------
+
+SRC_HOST=`arg_host $SRC`
+SRC_PATH=`arg_path $SRC`
+DISK_ID=$(echo $SRC_PATH|awk -F. '{print $NF}')
+
+#-------------------------------------------------------------------------------
+# Get DS information
+#-------------------------------------------------------------------------------
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/MGMT \
+                    /DATASTORE/TEMPLATE/MGMT_AUX \
+                    /DATASTORE/TEMPLATE/REPLICATION \
+                    /DATASTORE/TEMPLATE/FAILOVER \
+                    /DATASTORE/TEMPLATE/COPYRATE \
+                    /DATASTORE/TEMPLATE/CLEANRATE \
+                    /DATASTORE/TEMPLATE/CLUSTER)
+
+MGMT=${XPATH_ELEMENTS[0]:-$MGMT}
+MGMT_AUX=${XPATH_ELEMENTS[1]:-$MGMT_AUX}
+REPLICATION=${XPATH_ELEMENTS[2]:-$REPLICATION}
+FAILOVER=${XPATH_ELEMENTS[3]:-$FAILOVER}
+COPYRATE=${XPATH_ELEMENTS[4]:-$COPYRATE}
+CLEANRATE=${XPATH_ELEMENTS[5]:-$CLEANRATE}
+CLUSTER="${XPATH_ELEMENTS[6]:-$CLUSTER}"
+
+#-------------------------------------------------------------------------------
+# Get image information
+#-------------------------------------------------------------------------------
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SAVE_AS \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
+
+IQN="${XPATH_ELEMENTS[0]}"
+SAVE_AS="${XPATH_ELEMENTS[1]}"
+PERSISTENT="${XPATH_ELEMENTS[2]}"
+
+NEW_IQN=$DST
+MAP_NAME=$(v7000_ssh_monitor_and_log $SRC_HOST "readlink $SRC_PATH" | grep -o '3.*$')
+VDISK_UID=${MAP_NAME#3}
+
+if [ $REPLICATION -eq 1 ]; then
+    VDISK_NAME=$(v7000_get_vdisk_name ${VDISK_UID} ${MGMT} ${MGMT_AUX})
+    EXIT_STATUS=$?
+    if [ $EXIT_STATUS -eq 2 ]; then
+        MGMT=$MGMT_AUX
+    fi
+else
+    VDISK_NAME=$(v7000_get_vdisk_name ${VDISK_UID} ${MGMT})
+fi
+
+#-------------------------------------------------------------------------------
+# Start actions
+#-------------------------------------------------------------------------------
+
+FLUSH_CMD=$(cat <<EOF
+        set -e
+        DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings /dev/mapper/${MAP_NAME} | $AWK -F: '{print \$3}')
+        DM_SLAVE=\$(ls /sys/block/\${DM_HOLDER}/slaves)
+
+        $SUDO $(multipath_flush "$MAP_NAME")
+        rm $SRC_PATH
+
+        unset device 
+        for device in \${DM_SLAVE}
+        do 
+            $SUDO $BLOCKDEV --flushbufs /dev/\${device}
+            echo 1 | $SUDO $TEE /sys/block/\${device}/device/delete
+        done
+EOF
+)
+
+ssh_exec_and_log "$SRC_HOST" "$FLUSH_CMD" \
+    "Error flushing out mapping"
+
+log "Unmapping $SRC_HOST:$VDISK_NAME"
+v7000_unmap "$MGMT" "$SRC_HOST" "$VDISK_NAME"
+ssh_exec_and_log "$SRC_HOST" "$SUDO $(iscsiadm_session_rescan)" \
+    "Error rescanning iscsi sessions on $SRC_HOST"
+
+# Exit if not save_as. We are finished if this was a persistent image.
+[ -z "$SAVE_AS" ] && exit 0
+
+#-------------------------------------------------------------------------------
+# Image to save_as disk, starting clone and replication
+#-------------------------------------------------------------------------------
+
+TARGET_VDISK_NAME=`echo $NEW_IQN|$AWK -F. '{print $(NF)}'`
+
+if [ $FAILOVER -eq 1 ]; then
+    TARGET_VDISK_NAME=${TARGET_VDISK_NAME}-aux
+fi
+
+FLASHCOPY_CMD="set -e ; mkfcmap -autodelete -copyrate ${COPYRATE} -cleanrate ${CLEANRATE} \
+    -source ${VDISK_NAME} -target ${TARGET_VDISK_NAME} -name ${TARGET_VDISK_NAME} ; \
+    svctask startfcmap -prep ${TARGET_VDISK_NAME} ; \
+    sleep 5"
+log "$FLASHCOPY_CMD"
+v7000_ssh_exec_and_log "$MGMT" "$FLASHCOPY_CMD" \
+    "Error making FLashCopy mapping from $VDISK_NAME to $TARGET_VDISK_NAME"
+
+if [ $REPLICATION -eq 1 ] && [ $FAILOVER -eq 0 ]; then
+    v7000_ssh_exec_and_log "$MGMT" "svctask startrcrelationship -force ${TARGET_VDISK_NAME}" \
+        "Error starting remote copy relationship $MGMT:$TARGET_VDISK_NAME"
+fi
+
+if [ "$PERSISTENT" = "YES" ]; then
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Remove volume if src_path is not persistent (check again with volume name)
+#-------------------------------------------------------------------------------
+
+VDISK_TYPE=$(echo $VDISK_NAME | awk -F\- '{printf "%s", $3}; $3=="aux" {printf "-%s", $4}')
+
+if [ "$VDISK_TYPE" = "snapshot" ] || [ "$VDISK_TYPE" = "aux-snapshot" ]; then
+    READY=0
+    TIMEOUT=0
+    while [ "$READY" -ne 1 ]; do
+        READY=1
+        let TIMEOUT++
+        FCMAP=(`v7000_lsvdiskdependentmaps "$VDISK_NAME" "$MGMT"`)
+        if [ ${#FCMAP[@]} -gt 0 ]; then
+            for i in ${FCMAP[@]}; do
+                STATUS=`echo $i | awk -F\: '{print $9}'`
+                if [ "$STATUS" != "idle_or_copied" ]; then
+                    READY=0
+                fi
+            done
+        fi
+        if [ "$TIMEOUT" -le 720 ]; then
+            if [ "$READY" -ne 1 ]; then
+                sleep 60
+            fi
+        else
+            log_error "Error: Timeout waiting for dependent FlashCopy mapping(s) on $MGMT:$VDISK_NAME to complete."
+            error_message "Error: Timeout waiting for dependent FlashCopy mapping(s) on $MGMT:$VDISK_NAME to complete."
+            exit 1
+        fi
+    done
+
+    log "Removing snapshot $MGMT:$VDISK_NAME"
+    v7000_ssh_exec_and_log "$MGMT" "set -e ; svctask stopfcmap ${VDISK_NAME}" \
+        "Error stopping $MGMT:$VDISK_NAME FlashCopy mapping"
+    v7000_ssh_exec_and_log "$MGMT" "set -e ; svctask rmvdisk -force ${VDISK_NAME}" \
+        "Error removing $MGMT:$VDISK_NAME"
+fi

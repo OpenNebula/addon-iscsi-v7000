@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Laurent Grawet <dev@grawet.be>                             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+# PREMIGRATE SOURCE DST remote_system_dir vmid dsid template
+#  - SOURCE is the host where the VM is running
+#  - DST is the host where the VM is to be migrated
+#  - remote_system_dir is the path for the VM home in the system datastore
+#  - vmid is the id of the VM
+#  - dsid is the target datastore
+#  - template is the template of the VM in XML and base64 encoded
+
+# To access the vm_template you can use the xpath.rb utility. Check the
+# datastore drivers for an example.
+
+SRC=$1
+DST=$2
+
+RSDIR=$3
+VMID=$4
+DSID=$5
+TEMPLATE=$6
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+DRIVER_PATH=$(dirname $0)
+
+source ${DRIVER_PATH}/../../datastore/v7000/v7000.conf
+. ${DRIVER_PATH}/../../datastore/v7000/scripts_v7000.sh
+
+#-------------------------------------------------------------------------------
+# Set dst path and dir
+#-------------------------------------------------------------------------------
+
+SRC_HOST=`arg_host $SRC`
+DST_HOST=`arg_host $DST`
+
+#-------------------------------------------------------------------------------
+# Start actions
+#-------------------------------------------------------------------------------
+
+i=1
+while read line; do
+    DISK_IDS[$i]="$line"
+    (( i++ ))
+done < <(onevm show $VMID --all | $GREP -w "DISK_ID" | $CUT -d\" -f2)
+
+for j in `seq 1 ${#DISK_IDS[*]}`; do
+    XPATH="${DRIVER_PATH}/../../datastore/xpath.rb -b $TEMPLATE"
+
+    unset i XPATH_ELEMENTS
+
+    while IFS= read -r -d '' element; do
+        XPATH_ELEMENTS[i++]="$element"
+    done < <($XPATH     /VM/TEMPLATE/DISK[DISK_ID=${DISK_IDS[$j]}]/DISK_ID \
+                        /VM/TEMPLATE/DISK[DISK_ID=${DISK_IDS[$j]}]/TM_MAD \
+                        /VM/TEMPLATE/DISK[DISK_ID=${DISK_IDS[$j]}]/DATASTORE_ID)
+
+    DISK_NAME=disk.${XPATH_ELEMENTS[0]}
+    TM_MAD=${XPATH_ELEMENTS[1]}
+    DATASTORE_ID=${XPATH_ELEMENTS[2]}
+
+    if [ "$TM_MAD" = "v7000" ]; then
+        XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+        unset i XPATH_ELEMENTS
+
+        while IFS= read -r -d '' element; do
+            XPATH_ELEMENTS[i++]="$element"
+        done < <(onedatastore show -x $DATASTORE_ID| $XPATH \
+                            /DATASTORE/TEMPLATE/MGMT \
+                            /DATASTORE/TEMPLATE/MGMT_AUX \
+                            /DATASTORE/TEMPLATE/REPLICATION \
+                            /DATASTORE/TEMPLATE/FAILOVER)
+
+        MGMT=${XPATH_ELEMENTS[0]:-$MGMT}
+        MGMT_AUX=${XPATH_ELEMENTS[1]:-$MGMT_AUX}
+        REPLICATION=${XPATH_ELEMENTS[2]:-$REPLICATION}
+        FAILOVER=${XPATH_ELEMENTS[3]:-$FAILOVER}
+
+        MAP_NAME=$(v7000_ssh_monitor_and_log $SRC_HOST "readlink ${RSDIR}/${DISK_NAME}" | grep -o '3.*$')
+        VDISK_UID=${MAP_NAME#3}
+
+        if [ $REPLICATION -eq 1 ]; then
+            VDISK_NAME=$(v7000_get_vdisk_name ${VDISK_UID} ${MGMT} ${MGMT_AUX})
+            EXIT_STATUS=$?
+            if [ $EXIT_STATUS -eq 2 ]; then
+                MGMT=$MGMT_AUX
+            fi
+        else
+            VDISK_NAME=$(v7000_get_vdisk_name ${VDISK_UID} ${MGMT})
+        fi
+
+        log "Unmapping $SRC_HOST:$VDISK_NAME"
+
+        FLUSH_CMD=$(cat <<EOF
+            set -e
+            DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings /dev/mapper/${MAP_NAME} | $AWK -F: '{print \$3}')
+            DM_SLAVE=\$(ls /sys/block/\${DM_HOLDER}/slaves)
+
+            $SUDO $(multipath_flush "$MAP_NAME")
+
+            unset device 
+            for device in \${DM_SLAVE}
+            do 
+                $SUDO $BLOCKDEV --flushbufs /dev/\${device}
+                echo 1 | $SUDO $TEE /sys/block/\${device}/device/delete
+            done
+EOF
+)
+        ssh_exec_and_log "$SRC_HOST" "$FLUSH_CMD" \
+            "Error flushing out mapping"
+
+        v7000_unmap "$MGMT" "$SRC_HOST" "$VDISK_NAME"
+        ssh_exec_and_log "$SRC_HOST" "$SUDO $(iscsiadm_session_rescan)" \
+            "Error rescanning iscsi sessions on $SRC_HOST"
+    fi
+done
+
+exit 0

@@ -1,0 +1,110 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Laurent Grawet <dev@grawet.be>                             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+###############################################################################
+# This script is used to remove a VM image (SRC) from the image repository
+###############################################################################
+
+# ------------ Set up the environment to source common tools ------------
+
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../libfs.sh
+source ${DRIVER_PATH}/v7000.conf
+source ${DRIVER_PATH}/scripts_v7000.sh
+
+# -------- Get rm and datastore arguments from OpenNebula core ------------
+
+DRV_ACTION=$1
+ID=$2
+
+XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/IMAGE/SOURCE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/BRIDGE_LIST \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/MGMT \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/MGMT_AUX \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/REPLICATION \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/FAILOVER) 
+
+SRC="${XPATH_ELEMENTS[0]}"
+BRIDGE_LIST="${XPATH_ELEMENTS[1]:-$BRIDGE_LIST}"
+MGMT="${XPATH_ELEMENTS[2]:-$MGMT}"
+MGMT_AUX="${XPATH_ELEMENTS[3]:-$MGMT_AUX}"
+REPLICATION="${XPATH_ELEMENTS[4]:-$REPLICATION}"
+FAILOVER="${XPATH_ELEMENTS[5]:-$FAILOVER}"
+
+DST_HOST=`get_destination_host $ID`
+
+# -------- Start actions ------------
+
+log "SRC=$SRC"
+BASE_IQN=`echo $SRC|$CUT -d: -f1`
+TARGET=`echo $SRC|$CUT -d: -f2`
+VDISK_NAME=`echo $TARGET|$AWK -F. '{print $(NF)}'`
+MDISK_GROUP=`echo $TARGET|$AWK -F. '{print $(NF-1)}'`
+
+if [ $FAILOVER -eq 1 ]; then
+    MGMT=$MGMT_AUX
+    VDISK_NAME=${VDISK_NAME}-aux
+fi
+
+READY=0
+TIMEOUT=0
+while [ "$READY" -ne 1 ]; do
+    READY=1
+    let TIMEOUT++
+    FCMAP=(`v7000_lsvdiskdependentmaps "$VDISK_NAME" "$MGMT"`)
+    if [ ${#FCMAP[@]} -gt 0 ]; then
+        for i in ${FCMAP[@]}; do
+            STATUS=`echo $i | awk -F\: '{print $9}'`
+            if [ "$STATUS" != "idle_or_copied" ]; then
+                READY=0
+            fi
+        done
+    fi
+    if [ "$TIMEOUT" -le 720 ]; then
+        if [ "$READY" -ne 1 ]; then
+            sleep 60
+        fi
+    else
+        log_error "Error: Timeout waiting for dependent FlashCopy mapping(s) on $MGMT:$VDISK_NAME to complete."
+        error_message "Error: Timeout waiting for dependent FlashCopy mapping(s) on $MGMT:$VDISK_NAME to complete."
+        exit 1
+    fi
+done
+
+log "Removing $MGMT:$VDISK_NAME from the image repository"
+
+v7000_ssh_exec_and_log "$MGMT" "set -e ; svctask rmvdisk -force ${VDISK_NAME}" \
+    "Error removing $MGMT:$VDISK_NAME"
+if [ $REPLICATION -eq 1 ] && [ $FAILOVER -eq 0 ]; then
+    v7000_ssh_exec_and_log "$MGMT_AUX" "set -e ; svctask rmvdisk -force ${VDISK_NAME}-aux" \
+        "Error removing $MGMT_AUX:$VDISK_NAME"
+fi

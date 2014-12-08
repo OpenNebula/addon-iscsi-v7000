@@ -1,0 +1,233 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Laurent Grawet <dev@grawet.be>                             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+###############################################################################
+# This script is used to copy a VM image (SRC) to the image repository as DST
+# Several SRC types are supported
+###############################################################################
+
+# -------- Set up the environment to source common tools & conf ------------
+
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../libfs.sh
+source ${DRIVER_PATH}/v7000.conf
+source ${DRIVER_PATH}/scripts_v7000.sh
+
+# -------- Get cp and datastore arguments from OpenNebula core ------------
+
+DRV_ACTION=$1
+ID=$2
+
+UTILS_PATH="${DRIVER_PATH}/.."
+
+XPATH="$UTILS_PATH/xpath.rb -b $DRV_ACTION"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/BASE_PATH \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RESTRICTED_DIRS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/SAFE_DIRS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/UMASK \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/BRIDGE_LIST \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/MGMT \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/MGMT_AUX \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/REPLICATION \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/FAILOVER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/THIN_PROVISION \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RSIZE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/COPIES \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/COPYRATE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLEANRATE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/GRAINSIZE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/IO_GROUP \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/MDISK_GROUP \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/SYNC_RATE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/VTYPE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLUSTER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/BASE_IQN \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/PATH \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/SIZE \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/MD5 \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/SHA1)
+
+BASE_PATH="${XPATH_ELEMENTS[0]}"
+RESTRICTED_DIRS="${XPATH_ELEMENTS[1]}"
+SAFE_DIRS="${XPATH_ELEMENTS[2]}"
+UMASK="${XPATH_ELEMENTS[3]}"
+BRIDGE_LIST="${XPATH_ELEMENTS[4]:-$BRIDGE_LIST}"
+MGMT="${XPATH_ELEMENTS[5]:-$MGMT}"
+MGMT_AUX="${XPATH_ELEMENTS[6]:-$MGMT_AUX}"
+REPLICATION="${XPATH_ELEMENTS[7]:-$REPLICATION}"
+FAILOVER="${XPATH_ELEMENTS[8]:-$FAILOVER}"
+THIN_PROVISION="${XPATH_ELEMENTS[9]:-$THIN_PROVISION}"
+RSIZE="${XPATH_ELEMENTS[10]:-$RSIZE}"
+COPIES="${XPATH_ELEMENTS[11]:-$COPIES}"
+COPYRATE="${XPATH_ELEMENTS[12]:-$COPYRATE}"
+CLEANRATE="${XPATH_ELEMENTS[13]:-$CLEANRATE}"
+GRAINSIZE="${XPATH_ELEMENTS[14]:-$GRAINSIZE}"
+IO_GROUP="${XPATH_ELEMENTS[15]:-$IO_GROUP}"
+MDISK_GROUP="${XPATH_ELEMENTS[16]:-$MDISK_GROUP}"
+SYNC_RATE="${XPATH_ELEMENTS[17]:-$SYNC_RATE}"
+VTYPE="${XPATH_ELEMENTS[18]:-$VTYPE}"
+CLUSTER="${XPATH_ELEMENTS[19]:-$CLUSTER}"
+BASE_IQN="${XPATH_ELEMENTS[20]:-$BASE_IQN}"
+SRC="${XPATH_ELEMENTS[21]}"
+SIZE="${XPATH_ELEMENTS[22]}"
+MD5="${XPATH_ELEMENTS[23]}"
+SHA1="${XPATH_ELEMENTS[24]}"
+
+DST_HOST=`get_destination_host $ID`
+
+# -------- Start actions ------------
+
+set_up_datastore "$BASE_PATH" "$RESTRICTED_DIRS" "$SAFE_DIRS" "$UMASK"
+
+VDISK_NAME="one-${ID}"
+IQN="$BASE_IQN:2545.`echo $MGMT | awk -F'.' '{print $1}'`.node1.$VDISK_NAME"
+
+if [ $FAILOVER -eq 1 ]; then
+    MGMT=$MGMT_AUX
+    VDISK_NAME=${VDISK_NAME}-aux
+fi
+
+if [ $THIN_PROVISION -eq 1 ]; then
+    AUTOEXPAND="-autoexpand"
+    GRAINSIZE_PAR="-grainsize ${GRAINSIZE}"
+    RSIZE_PAR="-rsize ${RSIZE}"
+else
+    AUTOEXPAND=""
+    GRAINSIZE_PAR=""
+    RSIZE_PAR=""
+fi
+
+REGISTER_CMD="set -e ; svctask mkvdisk ${AUTOEXPAND} -cache readwrite -copies ${COPIES} \
+    ${GRAINSIZE_PAR} -iogrp ${IO_GROUP} -mdiskgrp ${MDISK_GROUP} -name ${VDISK_NAME} \
+    ${RSIZE_PAR} -size ${SIZE} -syncrate ${SYNC_RATE} -unit mb -vtype ${VTYPE}"
+v7000_ssh_exec_and_log "$MGMT" "$REGISTER_CMD" "Error registering $MGMT:$VDISK_NAME"
+
+echo "$IQN"
+
+VDISK_UID=`v7000_get_vdisk_uid $VDISK_NAME $MGMT`
+MAP_NAME="3${VDISK_UID}"
+DEV="/dev/mapper/${MAP_NAME}"
+
+if [ $REPLICATION -eq 1 ] && [ $FAILOVER -eq 0 ]; then
+    REGISTER2_CMD="set -e ; svctask mkvdisk ${AUTOEXPAND} -cache readwrite -copies ${COPIES} \
+        ${GRAINSIZE_PAR} -iogrp ${IO_GROUP} -mdiskgrp ${MDISK_GROUP} -name ${VDISK_NAME}-aux \
+        ${RSIZE_PAR} -size ${SIZE} -syncrate ${SYNC_RATE} -unit mb -vtype ${VTYPE}"
+    v7000_ssh_exec_and_log "$MGMT_AUX" "$REGISTER2_CMD" "Error registering $MGMT_AUX:$VDISK_NAME"
+    REPLICATION_CMD="set -e ; svctask mkrcrelationship -master ${VDISK_NAME} -aux ${VDISK_NAME}-aux \
+        -cluster ${CLUSTER} -name ${VDISK_NAME} ; \
+        svctask startrcrelationship -force ${VDISK_NAME}"
+    v7000_ssh_exec_and_log "$MGMT" "$REPLICATION_CMD" "Error replicating $MGMT:$VDISK_NAME"
+fi
+
+DOWNLOADER_ARGS=`set_downloader_args "$MD5" "$SHA1" "$NO_DECOMPRESS" "$LIMIT_TRANSFER_BW" "$SRC" -`
+
+COPY_COMMAND="$UTILS_PATH/downloader.sh $DOWNLOADER_ARGS"
+
+case $SRC in
+http://*|https://*)
+    log "Downloading $SRC to the image repository"
+
+    DUMP="$COPY_COMMAND"
+    ;;
+
+*)
+    if [ `check_restricted $SRC` -eq 1 ]; then
+        log_error "Not allowed to copy images from $RESTRICTED_DIRS"
+        error_message "Not allowed to copy image file $SRC"
+        exit 1
+    fi
+
+    log "Copying local image $SRC to the image repository"
+
+    DUMP="$COPY_COMMAND"
+    ;;
+esac
+
+v7000_map "$MGMT" "$DST_HOST" "$VDISK_NAME"
+
+DISCOVER_CMD=$(cat <<EOF
+    set -e
+    $SUDO $(iscsiadm_session_rescan)
+    $SUDO $(multipath_rescan)
+    # Wait a bit for new mapping
+    COUNTER=1
+    while [ ! -e "$DEV" ] && [ \$COUNTER -le 10 ]; do
+        sleep 1
+        COUNTER=\$((\$COUNTER + 1))
+    done
+    if [ ! -e "$DEV" ]; then
+        # Last chance to get our mapping
+        $SUDO $(multipath_rescan)
+        COUNTER=1
+        while [ ! -e "$DEV" ] && [ \$COUNTER -le 10 ]; do
+            sleep 1
+            COUNTER=\$((\$COUNTER + 1))
+        done
+    fi
+    # Exit with error if mapping does not exist
+    if [ ! -e "$DEV" ]; then
+        exit 1
+    fi
+    DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings "$DEV" | $AWK -F: '{print \$3}')
+    # Exit with error if mapping has no path
+    if [ ! "\$(ls -A /sys/block/\${DM_HOLDER}/slaves)" ]; then
+        exit 1
+    fi
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$DISCOVER_CMD" \
+    "Error registering $DST_HOST:$DEV"
+
+exec_and_log "eval $DUMP | $SSH $DST_HOST $SUDO $DD of=$DEV bs=64k conv=nocreat" \
+    "Error dumping $SRC to $DST_HOST:$DEV"
+
+FLUSH_CMD=$(cat <<EOF
+    set -e
+    DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings /dev/mapper/${MAP_NAME} | $AWK -F: '{print \$3}')
+    DM_SLAVE=\$(ls /sys/block/\${DM_HOLDER}/slaves)
+
+    $SUDO $(multipath_flush "$MAP_NAME")
+
+    unset device 
+    for device in \${DM_SLAVE}
+    do 
+        $SUDO $BLOCKDEV --flushbufs /dev/\${device}
+        echo 1 | $SUDO $TEE /sys/block/\${device}/device/delete
+    done
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$FLUSH_CMD" \
+    "Error flushing out mapping"
+v7000_unmap "$MGMT" "$DST_HOST" "$VDISK_NAME"
+ssh_exec_and_log "$DST_HOST" "$SUDO $(iscsiadm_session_rescan)" \
+    "Error rescanning session(s) on $DST_HOST"
