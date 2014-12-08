@@ -6,7 +6,7 @@ The iSCSI storage driver for IBM Storwize V7000 SAN provides OpenNebula with the
 
 ## Author
 
-* Laurent Grawet <dev@grawet.be>
+* [Laurent Grawet](mailto:dev@grawet.be)
 
 ## Compatibility
 
@@ -46,8 +46,8 @@ ddpt is used to clone to a different target datastore using sparse copy to speed
 ### OpenNebula Front-End
 
 * Copy these files/directories:
-  - datastore -> /var/lib/one/remotes/datastore/v7000
-  - tm -> /var/lib/one/remotes/tm/v7000
+  - datastore/v7000 -> /var/lib/one/remotes/datastore/v7000
+  - tm/v7000 -> /var/lib/one/remotes/tm/v7000
 * Add "v7000" to "arguments" attribute of TM_MAD and DATASTORE_MAD in /etc/one/oned.conf
 
   ```
