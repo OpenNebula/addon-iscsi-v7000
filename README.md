@@ -14,14 +14,14 @@ This add-on is compatible with OpenNebula 4.6+
 
 ## Prerequisites
 
-An optionnal deployment host is recommended to prepare virtual disks (mkfs, image upload...) but this can be handled by the front-end as well. The benefits are you can take this workload off the front-end and you only have to restart deployment host in case of trouble, not the whole front-end. The deployment host can of course be an OpenNebula VM. You can also decide to use multiple deployment hosts. They will be selected by round-robin like algorithm. If you decide not to use the deployment host(s), its prerequisites apply to the front-end.
+An optional deployment host is recommended to prepare virtual disks (mkfs, image upload...) but this can be handled by the front-end as well. The benefits are you can take this workload off the front-end and you only have to restart deployment host in case of trouble, not the whole front-end. The deployment host can of course be an OpenNebula VM. You can also decide to use multiple deployment hosts. They will be selected by round-robin like algorithm. If you decide not to use the deployment host(s), its prerequisites apply to the front-end.
 
 ### OpenNebula Front-end
 
 - ssh with public key authentication to IBM V7000 for oneadmin user
 - flock which is part of util-linux package
 
-flock is used to manage v7000 access concurrency. Only one session will be openend on a single v7000 box at a time.
+flock is used to manage v7000 access concurrency. Only one session will be opened on a single v7000 box at a time.
 
 ### OpenNebula Deployment Host(s)
 
@@ -29,7 +29,7 @@ flock is used to manage v7000 access concurrency. Only one session will be opene
 - multipath 
 - ddpt
 
-ddpt is used to clone to a different target datastore using sparse copy to speed up data transferts. You can still use traditional dd command if you prefer. See the beginning of v7000_script.sh file and set USE_DDPT=0.
+ddpt is used to clone to a different target datastore using sparse copy to speed up data transfers. You can still use traditional dd command if you prefer. See the beginning of v7000_script.sh file and set USE_DDPT=0.
 
 ### OpenNebula Hosts
 
@@ -108,10 +108,10 @@ The first step to create an iSCSI datastore is to set up a template file for it.
 #### Optionnal configuration attributes
 
 * **BASE_IQN** `[iqn]` The base IQN for V7000 iSCSI target. The default value is iqn.1986-03.com.ibm
-* **THIN_PROVISION ** `[1|0]` Activate thin-provisionned volumes. The default value is 1.
+* **THIN_PROVISION ** `[1|0]` Activate thin-provisioned volumes. The default value is 1.
 * **SNAPSHOT** `[1 | 0]` Use snapshots or clone for non-persistent images. The default value is 1.
-* **SNAPSHOT_RSIZE ** `[%]` *(mkvdisk -rsize option)*  Use with SNAPSHOT=1 parameter. Defines how much physical space is initially allocated to the thin-provisionned volume for non persistent image. The default value is 0 %.
-* **RSIZE** `[%]` *(mkvdisk -rsize option)* Defines how much physical space is initially allocated to the thin-provisionned volumes for persistent images. The default value is 2 %.
+* **SNAPSHOT_RSIZE ** `[%]` *(mkvdisk -rsize option)*  Use with SNAPSHOT=1 parameter. Defines how much physical space is initially allocated to the thin-provisioned volume for non persistent image. The default value is 0 %.
+* **RSIZE** `[%]` *(mkvdisk -rsize option)* Defines how much physical space is initially allocated to the thin-provisioned volumes for persistent images. The default value is 2 %.
 * **COPIES** `[1 | 2]` *(mkvdisk -copies option)* Specifies the number of local volume copies to create. Setting the value to 2 creates a mirrored volume. The default value is 1.
 * **IO_GROUP** `[io_grp]` *(mkvdisk -iogrp option)* Specifies the I/O group (node pair) with which to associate volumes. The default value is io_grp0.
 * **MDISK_GROUP** `[mdisk_grp]` *(mkvdisk -mdiskgrp option)* Specifies one or more managed disk groups (storage pools) to use when creating volumes. The default value is mdiskgrp0.
@@ -126,7 +126,7 @@ The first step to create an iSCSI datastore is to set up a template file for it.
 * **MGMT_AUX** `[fqdn]` The V7000 auxiliary box FQDN for replication. The default value is v7000-aux.localdomain.
 * **CLUSTER** `[cluster_id]` The V7000 Cluster ID. The default value is 00000200A0000000.
 * **REPLICATION** `[1 | 0]` Used to activate replication one the slave box. The default value is 0.
-* **FAILOVER** `[1 | 0]`Use auxiliary volumes instead of master ones on the auxiliary box. Volumes one the auxiliary box become masters. The default falue is 0.
+* **FAILOVER** `[1 | 0]`Use auxiliary volumes instead of master ones on the auxiliary box. Volumes one the auxiliary box become masters. The default value is 0.
 
 #### Configuring v7000 driver options
 
@@ -205,11 +205,9 @@ MGMT_AUX=box1
 
 Whith `REPLICATION=1` a replicated auxiliary volume will be created on `MGMT_AUX`. This volume is read-only, this is inherent to V7000 design. If you loose the master box, you will loose the VMs whose disks are mapped from this box. You can quickly recover by restarting the VMs and make them use the auxiliary volumes simply by setting `FAILOVER=1` datastore option.
 
-Once you have recovered from the incident, you can set back `FAILOVER=0`. All running VMs will continue to use auxiliary volumes but they will switch to master volumes on next deployment. If you decide to create new volumes while `FAILOVER=1`, it is your responsability to manage replication as soon as the other box is back online.
+Once you have recovered from the incident, you can set back `FAILOVER=0`. All running VMs will continue to use auxiliary volumes but they will switch to master volumes on next deployment. If you decide to create new volumes while `FAILOVER=1`, it is your responsibility to manage replication as soon as the other box is back online.
 
 ## Optimizations
 
-You can configure jumbo frames (MTU=9000) on booth V7000 and iSCSI initiators. Please, make sure jubo frames are supported by your network equipment (switches, routers...)
-You can also observe big performance improvement by using noop I/O scheduler inside VMs instead of cfq. Configure it with the `elevator=noop` kernel option.
-Use deadline I/0 scheduler on the host. Configure it with the `elevator=deadline` kernel option.
-
+You can configure jumbo frames (MTU=9000) on both V7000 and iSCSI initiators. Please, make sure jumbo frames are supported by your network equipment (switches, routers...)
+You can also achieve a big performance improvement by using noop I/O scheduler inside VMs and deadline I/0 scheduler on the hosts instead of cfq. Configure it with `elevator=noop` or `elevator=deadline` kernel options.
