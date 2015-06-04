@@ -222,6 +222,12 @@ else
         SRC_DM_SLAVE=\$(ls -A /sys/block/\${SRC_DM_HOLDER}/slaves)
         DM_SLAVE=\$(ls -A /sys/block/\${DM_HOLDER}/slaves)
 
+        # Wait a bit for mapping's paths
+        COUNTER=1
+        while [ ! "\${SRC_DM_SLAVE}"  ] || [ ! "\${DM_SLAVE}"  ] && [ \$COUNTER -le 10 ]; do
+            sleep 1
+            COUNTER=\$((\$COUNTER + 1))
+        done
         # Exit with error if mappings have no path
         if [ ! "\${SRC_DM_SLAVE}" ] || [ ! "\${DM_SLAVE}" ]; then
             exit 1

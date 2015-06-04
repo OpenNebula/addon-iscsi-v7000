@@ -193,8 +193,15 @@ if is_iscsi "$DST_HOST"; then
             exit 1
         fi
         DM_HOLDER=dm-\$($SUDO $DMSETUP info -c --noheadings "$DEV" | $AWK -F: '{print \$3}')
+        DM_SLAVE=\$(ls /sys/block/\${DM_HOLDER}/slaves)
+        # Wait a bit for mapping's paths
+        COUNTER=1
+        while [ ! "\${DM_SLAVE}" ] && [ \$COUNTER -le 10 ]; do
+            sleep 1
+            COUNTER=\$((\$COUNTER + 1))
+        done
         # Exit with error if mapping has no path
-        if [ ! "\$(ls -A /sys/block/\${DM_HOLDER}/slaves)" ]; then
+        if [ ! "\${DM_SLAVE}" ]; then
             exit 1
         fi
         ln -sf "$DEV" "$DST_PATH"
