@@ -108,9 +108,9 @@ The first step to create an iSCSI datastore is to set up a template file for it.
 #### Optionnal configuration attributes
 
 * **BASE_IQN** `[iqn]` The base IQN for V7000 iSCSI target. The default value is iqn.1986-03.com.ibm
-* **THIN_PROVISION ** `[1|0]` Activate thin-provisioned volumes. The default value is 1.
+* **THIN_PROVISION** `[1|0]` Activate thin-provisioned volumes. The default value is 1.
 * **SNAPSHOT** `[1 | 0]` Use snapshots or clone for non-persistent images. The default value is 1.
-* **SNAPSHOT_RSIZE ** `[%]` *(mkvdisk -rsize option)*  Use with SNAPSHOT=1 parameter. Defines how much physical space is initially allocated to the thin-provisioned volume for non persistent image. The default value is 0 %.
+* **SNAPSHOT_RSIZE** `[%]` *(mkvdisk -rsize option)*  Use with SNAPSHOT=1 parameter. Defines how much physical space is initially allocated to the thin-provisioned volume for non persistent image. The default value is 0 %.
 * **RSIZE** `[%]` *(mkvdisk -rsize option)* Defines how much physical space is initially allocated to the thin-provisioned volumes for persistent images. The default value is 2 %.
 * **COPIES** `[1 | 2]` *(mkvdisk -copies option)* Specifies the number of local volume copies to create. Setting the value to 2 creates a mirrored volume. The default value is 1.
 * **IO_GROUP** `[io_grp]` *(mkvdisk -iogrp option)* Specifies the I/O group (node pair) with which to associate volumes. The default value is io_grp0.
