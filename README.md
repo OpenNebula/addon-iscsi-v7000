@@ -181,7 +181,7 @@ All is left to do is to register and login to all V7000 nodes with
 
 `iscsiadm -m discovery -t st -p $NODE_IP:3260 --op update -n node.startup -v automatic`
 
-Where \$NODE_IP is the ip of one of your nodes. So you wil have to execute the command for each \$NODE_IP. The settings will be retained and the iSCSI sessions automatically restarted at boot.
+Where $NODE_IP is the ip of one of your nodes. So you wil have to execute the command for each $NODE_IP. The settings will be retained and the iSCSI sessions automatically restarted at boot.
 
 ### Configuring IBM Storwize V7000
 
