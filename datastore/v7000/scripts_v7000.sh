@@ -41,7 +41,8 @@ OD=od
 TEE=tee
 
 function v7000_lock {
-    local STATUS=0
+    local STATUS
+    STATUS=0
     eval "exec $FLOCK_FD> $FLOCK_LOCKFILE"
     $FLOCK -w $FLOCK_TIMEOUT -x $FLOCK_FD
     STATUS=$?
@@ -60,8 +61,9 @@ function v7000_unlock {
 function v7000_ssh_exec_and_log
 {
     v7000_lock
-    local SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2"`
-    local SSH_EXEC_RC=$?
+    local SSH_EXEC_OUT SSH_EXEC_RC
+    SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2"`
+    SSH_EXEC_RC=$?
     v7000_unlock
 
     if [ $SSH_EXEC_RC -ne 0 ]; then
@@ -80,8 +82,9 @@ function v7000_ssh_exec_and_log
 function v7000_ssh_monitor_and_log
 {
     v7000_lock
-    local SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2"`
-    local SSH_EXEC_RC=$?
+    local SSH_EXEC_OUT SSH_EXEC_RC
+    SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2"`
+    SSH_EXEC_RC=$?
     v7000_unlock
 
     if [ $SSH_EXEC_RC -ne 0 ]; then
@@ -99,11 +102,12 @@ function v7000_ssh_monitor_and_log
 }
 
 function v7000_get_vdisk_uid {
-    local VDISK_NAME="$1"
-    local V7K_MGMT="$2"
-    local V7K_MGMT_AUX="$3"
-    local STATUS=0
-    local VDISK_UID=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local VDISK_NAME V7K_MGMT V7K_MGMT_AUX STATUS VDISK_UID
+    VDISK_NAME="$1"
+    V7K_MGMT="$2"
+    V7K_MGMT_AUX="$3"
+    STATUS=0
+    VDISK_UID=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svcinfo lsvdisk -nohdr -delim : -filtervalue vdisk_name=$VDISK_NAME" \
         | $AWK -F\: '{print tolower($14)}'`
     if [ -z "$VDISK_UID" ] && [ -n $V7K_MGMT_AUX ]; then
@@ -124,11 +128,12 @@ function v7000_get_vdisk_uid {
 }
 
 function v7000_get_vdisk_name {
-    local VDISK_UID="$1"
-    local V7K_MGMT="$2"
-    local V7K_MGMT_AUX="$3"
-    local STATUS=0
-    local VDISK_NAME=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local VDISK_UID V7K_MGMT V7K_MGMT_AUX STATUS VDISK_NAME
+    VDISK_UID="$1"
+    V7K_MGMT="$2"
+    V7K_MGMT_AUX="$3"
+    STATUS=0
+    VDISK_NAME=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svcinfo lsvdisk -nohdr -delim : -filtervalue vdisk_UID=$VDISK_UID" \
         | $AWK -F\: '{print $2}'`
     if [ -z "$VDISK_NAME" ] && [ -n $V7K_MGMT_AUX ]; then
@@ -149,11 +154,12 @@ function v7000_get_vdisk_name {
 }
 
 function v7000_get_vdisk_size {
-    local VDISK_NAME="$1"
-    local V7K_MGMT="$2"
-    local V7K_MGMT_AUX="$3"
-    local STATUS=0
-    local VDISK_SIZE=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local VDISK_NAME V7K_MGMT V7K_MGMT_AUX STATUS VDISK_SIZE
+    VDISK_NAME="$1"
+    V7K_MGMT="$2"
+    V7K_MGMT_AUX="$3"
+    STATUS=0
+    VDISK_SIZE=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svcinfo lsvdisk -nohdr -delim : -bytes -filtervalue vdisk_name=$VDISK_NAME" \
         | $AWK -F\: '{print $8}'`
     if [ -z "$VDISK_SIZE" ] && [ -n $V7K_MGMT_AUX ]; then
@@ -174,12 +180,13 @@ function v7000_get_vdisk_size {
 }
 
 function v7000_get_vdisk_attr {
-    local VDISK_NAME="$1"
-    local VDISK_ATTR="$2"
-    local V7K_MGMT="$3"
-    local V7K_MGMT_AUX="$4"
-    local STATUS=0
-    local ATTR=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local VDISK_NAME VDISK_ATTR V7K_MGMT V7K_MGMT_AUX STATUS ATTR
+    VDISK_NAME="$1"
+    VDISK_ATTR="$2"
+    V7K_MGMT="$3"
+    V7K_MGMT_AUX="$4"
+    STATUS=0
+    ATTR=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svcinfo lsvdisk -delim : $VDISK_NAME" \
         | $GREP -w $VDISK_ATTR | $AWK -F\: '{print $2}'`
     if [ -z "$ATTR" ] && [ -n $V7K_MGMT_AUX ]; then
@@ -200,10 +207,10 @@ function v7000_get_vdisk_attr {
 }
 
 function v7000_lsvdiskdependentmaps {
-    local VDISK_NAME="$1"
-    local V7K_MGMT="$2"
+    local VDISK_NAME V7K_MGMT i
     local -a FCMAP
-    local i
+    VDISK_NAME="$1"
+    V7K_MGMT="$2"
 
     while IFS= read -r line; do
         FCMAP[i++]="$line"
@@ -212,9 +219,10 @@ function v7000_lsvdiskdependentmaps {
 }
 
 function v7000_is_relationship {
-    local REL_NAME="$1"
-    local V7K_MGMT="$2"
-    local REL=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local REL_NAME V7K_MGMT REL
+    REL_NAME="$1"
+    V7K_MGMT="$2"
+    REL=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svcinfo lsrcrelationship -nohdr -delim : -bytes -filtervalue RC_rel_name=$REL_NAME" \
         | $AWK -F\: '{print $2}'`
     if [  "$REL" = "$REL_NAME" ]; then
@@ -225,34 +233,38 @@ function v7000_is_relationship {
 }
 
 function v7000_map {
-    local V7K_MGMT="$1"
-    local HOST="$2"
-    local VDISK="$3"
-    local MAP_CMD=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local V7K_MGMT HOST VDISK MAP_CMD
+    V7K_MGMT="$1"
+    HOST="$2"
+    VDISK="$3"
+    MAP_CMD=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svctask mkvdiskhostmap -force -host $HOST $VDISK" \
         "Error mapping vdisk $VDISK to $HOST"`
     sleep 1
 }
 
 function v7000_unmap {
-    local V7K_MGMT="$1"
-    local HOST="$2"
-    local VDISK="$3"
-    local UNMAP_CMD=`v7000_ssh_monitor_and_log $V7K_MGMT \
+    local V7K_MGMT HOST VDISK UNMAP_CMD
+    V7K_MGMT="$1"
+    HOST="$2"
+    VDISK="$3"
+    UNMAP_CMD=`v7000_ssh_monitor_and_log $V7K_MGMT \
         "set -e ; svctask rmvdiskhostmap -host $HOST $VDISK" \
         "Error unmapping vdisk $VDISK from $HOST"`
     sleep 1
 }
 
 function iscsiadm_discovery_login {
-    local PORTAL=("$@")
+    local PORTAL
+    PORTAL=("$@")
     for i in ${PORTAL[@]}; do
       echo "$ISCSIADM -m discovery -t st -p $i --login"
     done
 }
 
 function iscsiadm_node_logout {
-    local PORTAL=("$@")
+    local PORTAL
+    PORTAL=("$@")
     for i in ${PORTAL[@]}; do
       echo "$ISCSIADM -m node -p $i --logoutall all"
     done
@@ -264,7 +276,8 @@ function iscsiadm_session_rescan {
 }
 
 function multipath_flush {
-    local MAP_NAME="$1"
+    local MAP_NAME
+    MAP_NAME="$1"
     echo "$MULTIPATH -f $MAP_NAME"
 }
 
@@ -274,17 +287,19 @@ function multipath_rescan {
 }
 
 function get_datastore_attr {
-    local DS_ID="$1"
-    local DS_ATTR="$2"
-    local ATTR=`onedatastore show $DS_ID | $GREP -w $DS_ATTR | $CUT -d\" -f2`
+    local DS_ID DS_ATTR ATTR
+    DS_ID="$1"
+    DS_ATTR="$2"
+    ATTR=`onedatastore show $DS_ID | $GREP -w $DS_ATTR | $CUT -d\" -f2`
     if [ -n $ATTR ]; then
         echo "$ATTR"
     fi
 }
 
 function clone_command {
-    local IF="$1"
-    local OF="$2"
+    local IF OF
+    IF="$1"
+    OF="$2"
     if [ $USE_DDPT -eq 1 ]; then
         echo "$DDPT if=$IF of=$OF bs=512 bpt=128 oflag=sparse"
     else
