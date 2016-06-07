@@ -62,7 +62,7 @@ function v7000_ssh_exec_and_log
 {
     v7000_lock
     local SSH_EXEC_OUT SSH_EXEC_RC
-    SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2"`
+    SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2" 2>&1`
     SSH_EXEC_RC=$?
     v7000_unlock
 
@@ -83,7 +83,7 @@ function v7000_ssh_monitor_and_log
 {
     v7000_lock
     local SSH_EXEC_OUT SSH_EXEC_RC
-    SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2"`
+    SSH_EXEC_OUT=`$SSH -o ConnectTimeout=$CONNECT_TIMEOUT "$1" "$2" 2>&1`
     SSH_EXEC_RC=$?
     v7000_unlock
 
