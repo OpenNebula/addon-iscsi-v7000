@@ -96,11 +96,11 @@ if [ $REPLICATION -eq 1 ]; then
     fi
 fi
 
-$(v7000_is_relationship ${RSHIP_NAME} ${MGMT}) 
-EXIT_STATUS=$?
-if [ $EXIT_STATUS -eq 1 ]; then
-    SWITCH_CMD="set -e ; svctask switchrcrelationship -primary ${PRIMARY} ${RSHIP_NAME}"
-    v7000_ssh_exec_and_log "$MGMT" "$SWITCH_CMD" "Error setting $MGMT:$RSHIP_NAME as primary"
+if v7000_is_rcrelationship ${RSHIP_NAME} ${MGMT}; then
+    if ! v7000_is_primary ${RSHIP_NAME} ${PRIMARY} ${MGMT}; then
+        SWITCH_CMD="set -e ; svctask switchrcrelationship -primary ${PRIMARY} ${RSHIP_NAME}"
+        v7000_ssh_exec_and_log "$MGMT" "$SWITCH_CMD" "Error setting $MGMT:$RSHIP_NAME as primary"
+    fi
 fi
 
 VDISK_UID=`v7000_get_vdisk_uid ${VDISK_NAME} ${MGMT}`

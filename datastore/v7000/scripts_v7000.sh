@@ -218,7 +218,7 @@ function v7000_lsvdiskdependentmaps {
     echo ${FCMAP[@]}
 }
 
-function v7000_is_relationship {
+function v7000_is_rcrelationship {
     local REL_NAME V7K_MGMT REL
     REL_NAME="$1"
     V7K_MGMT="$2"
@@ -226,9 +226,24 @@ function v7000_is_relationship {
         "set -e ; svcinfo lsrcrelationship -nohdr -delim : -bytes -filtervalue RC_rel_name=$REL_NAME" \
         | $AWK -F\: '{print $2}'`
     if [  "$REL" = "$REL_NAME" ]; then
-        exit 1
+        return 0
     else
-        exit 0
+        return 1
+    fi
+}
+
+function v7000_is_primary {
+    local REL_NAME PRIMARY_NAME V7K_MGMT PRIMARY
+    REL_NAME="$1"
+    PRIMARY_NAME="$2"
+    V7K_MGMT="$3"
+    PRIMARY=`v7000_ssh_monitor_and_log $V7K_MGMT \
+        "set -e ; svcinfo lsrcrelationship -nohdr -delim : -bytes -filtervalue RC_rel_name=$REL_NAME" \
+        | $AWK -F\: '{print $11}'`
+    if [  "$PRIMARY" = "$PRIMARY_NAME" ]; then
+        return 0
+    else
+        return 1
     fi
 }
 

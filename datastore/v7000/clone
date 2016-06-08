@@ -186,11 +186,11 @@ else
     SRC_RSHIP_NAME="${SRC_VDISK_NAME}"
 
     # Switch primary src disk
-    $(v7000_is_relationship ${SRC_RSHIP_NAME} ${SRC_MGMT})
-    EXIT_STATUS=$?
-    if [ $EXIT_STATUS -eq 1 ]; then
-        SWITCH_CMD="set -e ; svctask switchrcrelationship -primary ${SRC_PRIMARY} ${SRC_RSHIP_NAME}"
-        v7000_ssh_exec_and_log "$SRC_MGMT" "$SWITCH_CMD" "Error setting $SRC_MGMT:$SRC_RSHIP_NAME as primary"
+    if v7000_is_rcrelationship ${SRC_RSHIP_NAME} ${SRC_MGMT}; then
+        if ! v7000_is_primary ${SRC_RSHIP_NAME} ${SRC_PRIMARY} ${SRC_MGMT}; then
+            SWITCH_CMD="set -e ; svctask switchrcrelationship -primary ${SRC_PRIMARY} ${SRC_RSHIP_NAME}"
+            v7000_ssh_exec_and_log "$SRC_MGMT" "$SWITCH_CMD" "Error setting $SRC_MGMT:$SRC_RSHIP_NAME as primary"
+        fi
     fi
 
     CLONE_CMD=$(cat <<EOF
