@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # -------------------------------------------------------------------------- #
-# Copyright 2014-2016, Laurent Grawet <dev@grawet.be>                             #
+# Copyright 2014-2017, Laurent Grawet <dev@grawet.be>                        #
 #                                                                            #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may    #
 # not use this file except in compliance with the License. You may obtain    #
@@ -259,6 +259,9 @@ EOF
 
     ssh_exec_and_log "$DST_HOST" "$CLONE_CMD" \
         "Error cloning $SRC_VDISK_NAME to $VDISK_NAME"
+
+    v7000_unmap "$SRC_MGMT" "$DST_HOST" "$SRC_VDISK_NAME"
+    v7000_unmap "$MGMT" "$DST_HOST" "$VDISK_NAME"
 fi
 
 # Manage new vdisk replication
