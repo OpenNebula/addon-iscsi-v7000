@@ -108,6 +108,7 @@ The first step to create an iSCSI datastore is to set up a template file for it.
 #### Optionnal configuration attributes
 
 * **BASE_IQN** `[iqn]` The base IQN for V7000 iSCSI target. The default value is iqn.1986-03.com.ibm
+* **NO_ISCSI** `[hostname]` Lists of hosts (separated by spaces) for which no iscsiadm login or logout is performed. Defaults to $HOSTNAME.
 * **THIN_PROVISION** `[1|0]` Activate thin-provisioned volumes. The default value is 1.
 * **SNAPSHOT** `[1 | 0]` Use snapshots or clone for non-persistent images. The default value is 1.
 * **SNAPSHOT_RSIZE** `[%]` *(mkvdisk -rsize option)*  Use with SNAPSHOT=1 parameter. Defines how much physical space is initially allocated to the thin-provisioned volume for non persistent image. The default value is 0 %.
