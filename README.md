@@ -87,7 +87,7 @@ ddpt is used to clone to a different target datastore using sparse copy to speed
 
 ## Configuration
 
-###Configuring the System Datastore
+### Configuring the System Datastore
 
 To use V7000 drivers, you have to configure the system datastore as shared. This sytem datastore will only hold the symbolic links to the block devices, so it will not take much space. See more details on the [System Datastore Guide](http://docs.opennebula.org/4.10/administration/storage/system_ds.html).
 
